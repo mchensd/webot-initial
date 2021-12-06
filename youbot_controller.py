@@ -42,7 +42,7 @@ STR_TO_RGB = {
 }
 
 BERRIES_CHARS = ['o', 'r', 'y', 'p']
-
+BERRIES_STRS = ['orange', 'red', 'yellow', 'pink']
 BERRIES_PIXELS = {
     (212,140,95): ('orange', 0),
     (195,125,86): ('orange', 1),
@@ -236,11 +236,11 @@ def rgb_to_char(pixel):
             return 's'
     return '0'
                 
-def base_forwards(wheels):
+def base_forwards(wheels, mult=1):
     # print("Called")
     for wheel in wheels:
         wheel.setPosition(float('inf'))
-        wheel.setVelocity(SPEED)
+        wheel.setVelocity(mult*SPEED)
         
 def base_backwards(wheels):
     for wheel in wheels:
@@ -558,14 +558,7 @@ def drive_to_stump(fr, fl, br, bl, camera, stump_x1, stump_x2):
     
     print("driving to stump,", stump_x1, stump_x2)
     mult = 0.5
-    if stump_location == -1:
-        print("stump not found")
-        fr.setVelocity(mult * MAX_SPEED)
-        fl.setVelocity(mult * MAX_SPEED)
-        br.setVelocity(mult * MAX_SPEED)
-        bl.setVelocity(mult * MAX_SPEED)
-        return NOT_AT_STUMP
-    elif size >= 60:
+    if size >= 60:
         print("stop at stump")
         fr.setVelocity(0)
         fl.setVelocity(0)
@@ -594,7 +587,11 @@ def drive_to_stump(fr, fl, br, bl, camera, stump_x1, stump_x2):
         bl.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
         return NOT_AT_STUMP
         
-def drive_to_berry(fr, fl, br, bl, camera, image):
+def drive_to_berry(fr, fl, br, bl, camera, image, berry_colors_to_find, color_last_pursued):
+    berry_colors_to_find_hash = {}
+    for berry_color in berry_colors_to_find:
+        berry_colors_to_find_hash[berry_color] = 1
+        
     image_mid =  camera.getWidth() // 2
     all_berry_metadata = get_berry_metadata(camera, image)
     closest = get_closest_berry(all_berry_metadata)
@@ -605,10 +602,10 @@ def drive_to_berry(fr, fl, br, bl, camera, image):
         berry_center_position = (closest.x2 + closest.x1) // 2
     else:
         print('berry not found')
-        fr.setVelocity(mult * MAX_SPEED)
-        fl.setVelocity(mult * MAX_SPEED)
-        br.setVelocity(mult * MAX_SPEED)
-        bl.setVelocity(mult * MAX_SPEED)
+        fr.setVelocity(MAX_SPEED)
+        fl.setVelocity(MAX_SPEED)
+        br.setVelocity(MAX_SPEED)
+        bl.setVelocity(MAX_SPEED)
         return
         
 
@@ -675,6 +672,76 @@ def drive_to_berry(fr, fl, br, bl, camera, image):
             br.setVelocity(mult * MAX_SPEED)
             bl.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
             
+def berry_find_state(robot_info):
+    health, energy, armor = robot_info[0], robot_info[1], robot_info[2]
+    return_state = None
+    if health < 80 and energy < 60:
+        return_state = 'find_health_or_find_energy'
+    elif health < 50:
+        return_state = 'only_find_health'
+    elif energy < 50:
+        return_state = 'only_find_energy'
+    return return_state
+    
+def update_berry_probabilities(plus_40_energy_berry, minus_20_energy_berry, plus_20_health_berry, armor_berry, berry_history):
+
+    berry_colors = ['red', 'orange', 'yellow', 'pink']
+
+    for index, history in enumerate(berry_history):
+        values = history.values()
+        total_sum = sum(values)
+        if history['plus_40_energy'] > 0:
+            if history['plus_40_energy'] / total_sum > .5:
+                plus_40_energy_berry = berry_colors[index]
+        if history['minus_20_energy'] > 0:
+            if history['minus_20_energy'] / total_sum > .5:
+                minus_20_energy_berry = berry_colors[index]
+        if history['plus_20_health'] > 0:
+            if history['plus_20_health'] / total_sum > .5:
+                plus_20_health_berry = berry_colors[index]
+        if history['armor'] > 0:
+            if history['armor'] / total_sum > .5:
+                armor_berry = berry_colors[index]
+        
+    return plus_40_energy_berry, minus_20_energy_berry, plus_20_health_berry, armor_berry
+
+
+
+def detect_berry_consumption(robot_info, last_timestep_robot_info, color_last_pursued, berry_history):
+    #print("detecting berry consumption")
+    red_berry_history, orange_berry_history, yellow_berry_history, pink_berry_history = berry_history[0], berry_history[1], berry_history[2], berry_history[3]
+    health, energy, armor = robot_info[0], robot_info[1], robot_info[2]
+    last_timestep_health, last_timestep_energy, last_timestep_armor = last_timestep_robot_info[0], last_timestep_robot_info[1], last_timestep_robot_info[2]
+    consumed_berry = False #checks to see if a berry was consumed by checking differences in health, energy, armor
+    last_pursued_berry_history = red_berry_history
+    if color_last_pursued == 'red':
+        last_pursued_berry_history = red_berry_history
+    elif color_last_pursued == 'orange':
+        last_pursued_berry_history = orange_berry_history
+    elif color_last_pursued == 'yellow':
+        last_pursued_berry_history = yellow_berry_history
+    elif color_last_pursued == 'pink':
+        last_pursued_berry_history = pink_berry_history
+    # print("energy is now", energy)
+    # print("energy from last timestep", energy)
+    # print("armor is now", armor)
+    # print("armor from last timestep", last_timestep_armor)
+    if energy > last_timestep_energy:
+        # print("just consumed 40 energy berry")
+        last_pursued_berry_history['plus_40_energy'] += 1
+    elif (energy - last_timestep_energy) <= -15: 
+        # print("just consumed -20 energy berry")
+        last_pursued_berry_history['minus_20_energy'] += 1
+    elif armor > last_timestep_armor: # not sure about how to detect if armor changes yet
+        # print("just consumed armor berry")
+        last_pursued_berry_history['armor'] += 1
+    elif health > last_timestep_health: #might checks equal health in the case that you ate a berry while at full health
+        # print("just consumed +20 health berry")
+        last_pursued_berry_history['plus_20_health'] += 1
+    last_timestep_robot_info_new = []
+    for element in robot_info:
+        last_timestep_robot_info_new.append(element)
+    return last_timestep_robot_info_new, [red_berry_history, orange_berry_history, yellow_berry_history, pink_berry_history]
         
 #------------------CHANGE CODE ABOVE HERE ONLY--------------------------
 
@@ -700,26 +767,26 @@ def main():
     #------------------CHANGE CODE BELOW HERE ONLY--------------------------
     
     #COMMENT OUT ALL SENSORS THAT ARE NOT USED. READ SPEC SHEET FOR MORE DETAILS
-    accelerometer = robot.getDevice("accelerometer")
-    accelerometer.enable(timestep)
+    #accelerometer = robot.getDevice("accelerometer")
+    #accelerometer.enable(timestep)
     
-    gps = robot.getDevice("gps")
-    gps.enable(timestep)
+    #gps = robot.getDevice("gps")
+    #gps.enable(timestep)
     
-    compass = robot.getDevice("compass")
-    compass.enable(timestep)
+    #compass = robot.getDevice("compass")
+    #compass.enable(timestep)
     
     camera1 = robot.getDevice("ForwardLowResBigFov")
     camera1.enable(timestep)
     
-    camera2 = robot.getDevice("ForwardHighResSmallFov")
-    camera2.enable(timestep)
+    #camera2 = robot.getDevice("ForwardHighResSmallFov")
+    #camera2.enable(timestep)
     
-    camera3 = robot.getDevice("ForwardHighRes")
-    camera3.enable(timestep)
+    #camera3 = robot.getDevice("ForwardHighRes")
+    #camera3.enable(timestep)
     
-    camera4 = robot.getDevice("ForwardHighResSmall")
-    camera4.enable(timestep)
+    #camera4 = robot.getDevice("ForwardHighResSmall")
+    #camera4.enable(timestep)
     
     camera5 = robot.getDevice("BackLowRes")
     camera5.enable(timestep)
@@ -730,26 +797,26 @@ def main():
     camera7 = robot.getDevice("LeftLowRes")
     camera7.enable(timestep)
     
-    camera8 = robot.getDevice("BackHighRes")
-    camera8.enable(timestep)
+    #camera8 = robot.getDevice("BackHighRes")
+    #camera8.enable(timestep)
     
-    gyro = robot.getDevice("gyro")
-    gyro.enable(timestep)
+    #gyro = robot.getDevice("gyro")
+    #gyro.enable(timestep)
     
     #inertialUnit = robot.getDevice("inertial unit")
     #inertialUnit.enable(timestep)
     
-    lightSensor = robot.getDevice("light sensor")
-    lightSensor.enable(timestep)
+    #lightSensor = robot.getDevice("light sensor")
+    #lightSensor.enable(timestep)
     
-    receiver = robot.getDevice("receiver")
-    receiver.enable(timestep)
+    #receiver = robot.getDevice("receiver")
+    #receiver.enable(timestep)
     
-    rangeFinder = robot.getDevice("range-finder")
-    rangeFinder.enable(timestep)
+    #rangeFinder = robot.getDevice("range-finder")
+    #rangeFinder.enable(timestep)
     
-    lidar = robot.getDevice("lidar")
-    lidar.enable(timestep)
+    #lidar = robot.getDevice("lidar")
+    #lidar.enable(timestep)
     
     fr = robot.getDevice("wheel1")
     fl = robot.getDevice("wheel2")
@@ -802,6 +869,22 @@ def main():
     zero_count = 0
     goback = 0
     
+    last_timestep_robot_info = [100, 100, 0] 
+
+    berry_colors_to_find = []
+    plus_40_energy_berry = None
+    minus_20_energy_berry = None
+    plus_20_health_berry = None
+    armor_berry = None
+    color_last_pursued = None
+
+    red_berry_history = {'plus_40_energy':0, 'minus_20_energy': 0, 'plus_20_health': 0, 'armor': 0}
+    orange_berry_history = {'plus_40_energy':0, 'minus_20_energy': 0, 'plus_20_health': 0, 'armor': 0}
+    yellow_berry_history = {'plus_40_energy':0, 'minus_20_energy': 0, 'plus_20_health': 0, 'armor': 0}
+    pink_berry_history = {'plus_40_energy':0, 'minus_20_energy': 0, 'plus_20_health': 0, 'armor': 0}
+
+
+    berry_history = [red_berry_history, orange_berry_history, yellow_berry_history, pink_berry_history]
 
     #------------------CHANGE CODE ABOVE HERE ONLY--------------------------
     
@@ -835,6 +918,9 @@ def main():
         timer += 1
         
      #------------------CHANGE CODE BELOW HERE ONLY--------------------------   
+        plus_40_energy_berry, minus_20_energy_berry, plus_20_health_berry, armor_berry = update_berry_probabilities(plus_40_energy_berry, minus_20_energy_berry, plus_20_health_berry, armor_berry, berry_history)
+        last_timestep_robot_info, berry_history = detect_berry_consumption(robot_info, last_timestep_robot_info, color_last_pursued, berry_history)
+
         wheels = [fr, fl, br, bl]
         #print(LF_berries)
         #print(is_at_stump)
@@ -958,7 +1044,7 @@ def main():
         width = camera1.getWidth()  
         height = camera1.getHeight()
 
-        LF_berries = robot_info[0] < 80 or robot_info[1] < 100 # maybe change based on health, energy metric
+        LF_berries = robot_info[0] < 80 or robot_info[1] < 70 # maybe change based on health, energy metric
         
         
         nxt_dir = None
@@ -971,6 +1057,8 @@ def main():
             Rwall = approaching_wall(imageR_T)
             Lwall = approaching_wall(imageL_T)
             close_stump = too_close_stump(image1_T)
+            
+            
             if Rwall:
                 sl = 4
                 continue
@@ -985,7 +1073,7 @@ def main():
                 f.write(str(imageB))
             with open('imL.txt', 'w') as f:
                 f.write(str(imageL))
-            if (LF_berries and i%200 == 0) or (not LF_berries and i%40 == 0) or critical_zombies or wall or close_stump:
+            if (LF_berries and i%100 == 0) or (not LF_berries and i%40 == 0) or critical_zombies or wall or close_stump:
                 print('critical_zombie: {}, wall: {}'.format(critical_zombies, wall))
                 world_pixels_F, world_pixels_B, world_pixels_R, world_pixels_L = [np.full((height,width), '0') for _ in range(4)]
                 compute_world_pixel_info([(world_pixels_F, image1), (world_pixels_R, imageR), (world_pixels_B, imageB), (world_pixels_L, imageL)], width, height)        
@@ -1009,15 +1097,48 @@ def main():
                 
                 #turn 
             elif LF_berries:
-                val = drive_to_berry(fr, fl, br, bl, camera1, image1_T)
+                color_last_pursued = BERRIES_STRS[timer%4]
+                '''
+                val = None
+                berry_search_state = berry_find_state(robot_info)
+                color_last_pursued = BERRIES_CHARS[timer%4]
+                if berry_search_state == 'find_health_or_find_energy':
+                    print("need health and energy")
+                    if plus_40_energy_berry == None and  plus_20_health_berry == None:
+                        berry_colors_to_find = ['red', 'orange', 'yellow', 'pink']
+                    elif plus_40_energy_berry and plus_20_health_berry :
+                        berry_colors_to_find = [plus_20_health_berry, plus_40_energy_berry]
+                    elif plus_20_health_berry:
+                        berry_colors_to_find = [plus_20_health_berry]
+                    elif plus_40_energy_berry:
+                        berry_colors_to_find = [plus_40_energy_berry]
+                    val = drive_to_berry(fr, fl, br, bl, camera1, image1_T, berry_colors_to_find, color_last_pursued)
+
+                elif berry_search_state == 'only_find_health':
+                    if plus_20_health_berry == None:
+                        berry_colors_to_find = ['red', 'orange', 'yellow', 'pink']
+                    elif plus_20_health_berry:
+                        berry_colors_to_find = [plus_20_health_berry]
+                    val = drive_to_berry(fr, fl, br, bl, camera1, image1_T, berry_colors_to_find, color_last_pursued)
+                #elif berry_search_state == 'only_find_energy':
+                else:
+                    if plus_40_energy_berry == None:
+                        berry_colors_to_find = ['red', 'orange', 'yellow', 'pink']
+                    elif plus_40_energy_berry:
+                        berry_colors_to_find = [plus_40_energy_berry]
+                '''
+                val = drive_to_berry(fr, fl, br, bl, camera1, image1_T, berry_colors_to_find, color_last_pursued)                
+                
+                
+                #val = drive_to_berry(fr, fl, br, bl, camera1, image1_T)
                 if val is not None:
                     is_at_stump = val
                 
             # drive to closest berry without zombie on/near it
-            else:
-                base_forwards(wheels)
+            else: # not LF berries
+                base_forwards(wheels, 2)
         else:
-            base_forwards(wheels)
+            base_forwards(wheels, 0.3)
                 
         
         i+=1
