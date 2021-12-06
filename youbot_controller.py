@@ -12,11 +12,12 @@ from youbot_zombie import *
 
 
 class BerryMetadata():
-    def __init__(self, x1, x2, y, color):
+    def __init__(self, x1, x2, y, color, stump):
         self.x1 = x1
         self.x2 = x2
         self.y = y
         self.color = color
+        self.stump = stump
         
 MAX_SPEED = 14.81        
 SPEED = 14.81/2
@@ -25,9 +26,13 @@ ANG_VEL = 0.835
 PI = 3.14159265
 THIRTY_DEG_STEPS = 4
 LF_berries = False
+
 # time to rotate pi/6 = pi/6/0.835
 # timer steps = time/.128
 COLOR_DIST_THRESH = 300
+AT_STUMP = "at stump"
+NOT_AT_STUMP = "not at stump"
+
 
 STR_TO_RGB = {
     'orange': [212,140,95],
@@ -50,9 +55,10 @@ BERRIES_PIXELS = {
 
     (224,214,32): ('yellow', 0),
     (219,208,34): ('yellow', 1),
-    (192,180,32): ('yellow', 2),
-    (160,149,22): ('yellow', 3),
-    (71,70,14): ('yellow', 4),
+    (207, 195, 28): ('yellow', 2),
+    (192,180,32): ('yellow', 3),
+    (160,149,22): ('yellow', 4),
+    (71,70,14): ('yellow', 5),
 
     (209,137,181): ('pink', 0),
     (198,127,171): ('pink', 1),
@@ -198,6 +204,19 @@ ZOMBIES_PIXELS = {
     ]
 }
 
+STUMP_PIXELS = {
+    (10,10,14),
+    (10,10,13),
+    (26,26,28),
+    (10,11,14),
+    (25,26,27),
+    (27,28,30),
+    (11,12,16)
+}
+
+
+
+
 def rgb_to_char(pixel):
     for color in BERRIES_PIXELS:
         if dist(pixel, color) <= COLOR_DIST_THRESH:
@@ -212,7 +231,9 @@ def rgb_to_char(pixel):
         for color in ZOMBIES_PIXELS[c]:
             if dist(pixel, color) <= COLOR_DIST_THRESH:
                 return c
-                
+    for c in STUMP_PIXELS:
+        if dist(pixel, c) <= COLOR_DIST_THRESH:
+            return 's'
     return '0'
                 
 def base_forwards(wheels):
@@ -220,7 +241,12 @@ def base_forwards(wheels):
     for wheel in wheels:
         wheel.setPosition(float('inf'))
         wheel.setVelocity(SPEED)
-
+        
+def base_backwards(wheels):
+    for wheel in wheels:
+        wheel.setPosition(float('-inf'))
+        wheel.setVelocity(-MAX_SPEED)
+        
 def base_reset(wheels):
     print("resetting")
     for wheel in wheels:
@@ -268,6 +294,20 @@ def strafe_right(wheels):
     for i in range(4):
         wheels[i].setVelocity(speeds[i])
 
+def arm_reset(arms):
+    arms[0].setPosition(0.0)
+    arms[1].setPosition(1.57)
+    arms[2].setPosition(-2.635)
+    arms[3].setPosition(1.78)
+    arms[4].setPosition(0.0)
+    
+def put_arm_down(arms):
+    arms[0].setPosition(0.0)
+    arms[1].setPosition(-1.1)
+    arms[2].setPosition(-1.0)
+    arms[3].setPosition(.5)
+    arms[4].setPosition(0.0)
+    
 def dist(a, b):
     return sum([(a[i]-b[i])**2 for i in range(len(a))])
 
@@ -370,12 +410,12 @@ def get_world_stats(pixels):
 def has_critical_zombies_or_wall(image):
     zombie = False
     wall = False
-    for i in range(len(image)-1, 33, -1):
+    for i in range(len(image)-1, 34, -1):
         cnt = 0
         for j in range(len(image[i])):
             char = rgb_to_char(image[i][j])
             if char in ZOMBIES_PIXELS:
-                zombies = True
+                zombie = True
             elif char == '0':
                 cnt += 1
         if i >= 45 and cnt >= 0.7*len(image[i]):
@@ -400,6 +440,14 @@ def approaching_wall(image):
         '''
     return False
     
+def too_close_stump(image):
+    cnt = 0
+    for x in range(len(image[0])):
+        if rgb_to_char(image[0][x]) == 's':
+            cnt += 1
+    if cnt > 0.95*len(image[0]):
+        return True
+    return False
 def compute_scores(pixels, i):
     zombies_info, berries_info, floor_pixel_count = get_world_stats(pixels)
     score = -2*len(zombies_info)
@@ -456,22 +504,31 @@ def get_berry_metadata(camera, image):
     
     x1 = -1
     x2 = -2
+    stump = False
     #print(len(world_pixel_info), len(world_pixel_info[0]), height, width)
     for y in range(height):
         for x in range(width):
             pix = rgb_to_char(image[y][x])
             if pix in BERRIES_CHARS:
                 if not first:
+                    if y < height-1 and rgb_to_char(image[y+1][x]) == 's':
+                        stump = True
                     x1 = x
                     first = True
                 else:
+                    if y < height-1 and rgb_to_char(image[y+1][x]) == 's':
+                        stump = True
                     x2 = x
                     second = True
             elif first and second:
-                berry_metadata = BerryMetadata(x1, x2, y, pix)
+                stump = False
+                if y < height-1 and rgb_to_char(image[y+1][x]) == 's':
+                    stump = True
+                berry_metadata = BerryMetadata(x1, x2, y, pix, stump)
                 all_berry_metadata.append(berry_metadata)
                 first = False
                 second = False
+                stump = False
                 x1 = -1
                 x2 = -1
                 
@@ -489,55 +546,136 @@ def get_closest_berry(all_berry_metadata):
             
     return closest_berry_metadata
     
+
+
+def drive_to_stump(fr, fl, br, bl, camera, stump_x1, stump_x2):    
+    stump_location = ((stump_x1 + stump_x2) // 2)
+    size = stump_x2 - stump_x1
+    image_mid = camera.getWidth() // 2
+    THRESHOLD = 2
+    error = abs(image_mid - stump_location)
+    gain = error / image_mid
     
+    print("driving to stump,", stump_x1, stump_x2)
+    mult = 0.5
+    if stump_location == -1:
+        print("stump not found")
+        fr.setVelocity(mult * MAX_SPEED)
+        fl.setVelocity(mult * MAX_SPEED)
+        br.setVelocity(mult * MAX_SPEED)
+        bl.setVelocity(mult * MAX_SPEED)
+        return NOT_AT_STUMP
+    elif size >= 60:
+        print("stop at stump")
+        fr.setVelocity(0)
+        fl.setVelocity(0)
+        br.setVelocity(0)
+        bl.setVelocity(0)
+        return AT_STUMP
+    elif image_mid - THRESHOLD < stump_location < image_mid + THRESHOLD:
+        print("stump aligned go straight")
+        fr.setVelocity(mult * MAX_SPEED)
+        fl.setVelocity(mult * MAX_SPEED)
+        br.setVelocity(mult * MAX_SPEED)
+        bl.setVelocity(mult * MAX_SPEED)
+        return NOT_AT_STUMP
+    elif stump_location < image_mid:
+        print("stump on the left")
+        fr.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
+        fl.setVelocity(mult * MAX_SPEED)
+        br.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
+        bl.setVelocity(mult * MAX_SPEED)
+        return NOT_AT_STUMP
+    else:
+        print("stump on the right")
+        fr.setVelocity(mult * MAX_SPEED)
+        fl.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
+        br.setVelocity(mult * MAX_SPEED)
+        bl.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
+        return NOT_AT_STUMP
+        
 def drive_to_berry(fr, fl, br, bl, camera, image):
     image_mid =  camera.getWidth() // 2
     all_berry_metadata = get_berry_metadata(camera, image)
     closest = get_closest_berry(all_berry_metadata)
     #print('berries', len(all_berry_metadata))
     berry_center_position = -1
+    mult = 0.5
     if closest:
         berry_center_position = (closest.x2 + closest.x1) // 2
-    
-    error = abs(image_mid - berry_center_position)
-    gain = error / image_mid
-    
-    #print("image mid", image_mid)
-    #print("berry center ", berry_center_position)
-    
-    fr.setVelocity(.5 * MAX_SPEED)
-    fl.setVelocity(.5 * MAX_SPEED)
-    br.setVelocity(.5 * MAX_SPEED)
-    bl.setVelocity(.5 * MAX_SPEED)
-    
-    THRESHOLD = 2
-    
-    if berry_center_position == -1:
-        print("berry not found")
-        fr.setVelocity(.5 * MAX_SPEED)
-        fl.setVelocity(.5 * MAX_SPEED)
-        br.setVelocity(.5 * MAX_SPEED)
-        bl.setVelocity(.5 * MAX_SPEED)
-    elif image_mid - THRESHOLD < berry_center_position < image_mid + THRESHOLD:
-        print("berry aligned go straight")
-        fr.setVelocity(.5 * MAX_SPEED)
-        fl.setVelocity(.5 * MAX_SPEED)
-        br.setVelocity(.5 * MAX_SPEED)
-        bl.setVelocity(.5 * MAX_SPEED)
-    elif berry_center_position < image_mid:
-        print("berry on the left")
-        fr.setVelocity(.5 * MAX_SPEED + gain * MAX_SPEED)
-        fl.setVelocity(.5 * MAX_SPEED)
-        br.setVelocity(.5 * MAX_SPEED + gain * MAX_SPEED)
-        bl.setVelocity(.5 * MAX_SPEED)
     else:
-        print("berry on the right")
-        fr.setVelocity(.5 * MAX_SPEED)
-        fl.setVelocity(.5 * MAX_SPEED + gain * MAX_SPEED)
-        br.setVelocity(.5 * MAX_SPEED)
-        bl.setVelocity(.5 * MAX_SPEED + gain * MAX_SPEED)
+        print('berry not found')
+        fr.setVelocity(mult * MAX_SPEED)
+        fl.setVelocity(mult * MAX_SPEED)
+        br.setVelocity(mult * MAX_SPEED)
+        bl.setVelocity(mult * MAX_SPEED)
+        return
         
-    
+
+    if closest.stump:
+        stump_x1 = closest.x2
+        stump_x2 = closest.x2
+        
+        y_min = closest.y+1
+        y_max = y_min
+        while y_max < camera.getHeight() and rgb_to_char(image[y_max][closest.x2]) == 's':
+            y_max += 1
+            
+        y = (y_min + y_max) // 2
+        
+        print("y", y, closest.y)
+        for x in range(closest.x2, -1, -1):
+            pix_char = rgb_to_char(image[y][x])
+            if pix_char != 's':
+                stump_x1 = x
+                break
+        for x in range(closest.x2, camera.getWidth()):
+            pix_char = rgb_to_char(image[y][x])
+            if pix_char == 's':
+                stump_x2 = x
+            else:
+                break
+        print("stump", stump_x1, stump_x2)
+        return drive_to_stump(fr, fl, br, bl, camera, stump_x1, stump_x2)
+        
+        
+        #drive_to_stump(fr, fl, br, bl, camera, stump_x1, stump_x2)
+        
+    else:
+        error = abs(image_mid - berry_center_position)
+        gain = 0.5
+        
+        #print("image mid", image_mid)
+        #print("berry center ", berry_center_position)
+        
+        THRESHOLD = 2
+        
+        if berry_center_position == -1:
+            print("berry not found")
+            fr.setVelocity(MAX_SPEED)
+            fl.setVelocity(MAX_SPEED)
+            br.setVelocity(MAX_SPEED)
+            bl.setVelocity(MAX_SPEED)
+        elif image_mid - THRESHOLD < berry_center_position < image_mid + THRESHOLD:
+            print("berry aligned go straight")
+            fr.setVelocity(MAX_SPEED)
+            fl.setVelocity(MAX_SPEED)
+            br.setVelocity(MAX_SPEED)
+            bl.setVelocity(MAX_SPEED)
+        elif berry_center_position < image_mid:
+            print("berry on the left")
+            fr.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
+            fl.setVelocity(mult * MAX_SPEED)
+            br.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
+            bl.setVelocity(mult * MAX_SPEED)
+        else:
+            print("berry on the right")
+            fr.setVelocity(mult * MAX_SPEED)
+            fl.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
+            br.setVelocity(mult * MAX_SPEED)
+            bl.setVelocity(mult * MAX_SPEED + gain * MAX_SPEED)
+            
+        
 #------------------CHANGE CODE ABOVE HERE ONLY--------------------------
 
 def main():
@@ -628,6 +766,17 @@ def main():
     br.setVelocity(0)
     bl.setVelocity(0)   
     
+    arms = [None] * 5
+    
+    arms[0] = robot.getDevice("arm1");
+    arms[1] = robot.getDevice("arm2");
+    arms[2] = robot.getDevice("arm3");
+    arms[3] = robot.getDevice("arm4");
+    arms[4] = robot.getDevice("arm5");
+
+    arms[1].setVelocity(1.5)
+    arms[0].setPosition(0)
+
     i=0
            
     tl_count = 0
@@ -638,9 +787,22 @@ def main():
     sr = 0
     sl = 0
     
+    AT_STUMP = "at stump"
+    NOT_AT_STUMP = "not at stump"
+
+    is_at_stump = NOT_AT_STUMP
+    strafe_left_stump_align = 7
+    drive_forward_stump_align = 15  
+    arm_down_count = 6
+    arm_up_count = 6
+    drive_to_knock_berry_count = 20
+    back_up_after_knocking_berry = 15
+    BERRY_KNOCKED_OFF = False    
+    
     zero_count = 0
     goback = 0
     
+
     #------------------CHANGE CODE ABOVE HERE ONLY--------------------------
     
     
@@ -674,13 +836,61 @@ def main():
         
      #------------------CHANGE CODE BELOW HERE ONLY--------------------------   
         wheels = [fr, fl, br, bl]
+        #print(LF_berries)
+        #print(is_at_stump)
+        if is_at_stump == AT_STUMP:
+            if drive_forward_stump_align:
+                base_forwards(wheels)
+                drive_forward_stump_align -= 1
+                continue
+            elif drive_forward_stump_align == 0:
+                base_reset(wheels)
+                if strafe_left_stump_align:
+                    strafe_left(wheels)
+                    strafe_left_stump_align -= 1
+                    continue
+                elif strafe_left_stump_align == 0:
+                    base_reset(wheels)
+                    if arm_down_count:
+                        put_arm_down(arms)
+                        arm_down_count -= 1
+                        continue
+                    elif arm_down_count == 0:
+                        if drive_to_knock_berry_count:
+                            strafe_right(wheels)
+                            drive_to_knock_berry_count -= 1
+                            continue
+                        else:
+                            if back_up_after_knocking_berry:
+                                base_backwards(wheels)
+                                back_up_after_knocking_berry -= 1
+                                continue
+                            else:
+                                base_reset(wheels)
+                                BERRY_KNOCKED_OFF = True
+                                
+        if BERRY_KNOCKED_OFF and arm_up_count:
+            arm_reset(arms)
+            arm_up_count-=1
+            continue
+            
+        elif BERRY_KNOCKED_OFF and arm_up_count == 0:
+            # reset values
+            is_at_stump = NOT_AT_STUMP
+            strafe_left_stump_align = 7
+            drive_forward_stump_align = 15  
+            arm_down_count = 6
+            arm_up_count = 6
+            drive_to_knock_berry_count = 20
+            back_up_after_knocking_berry = 15
+            BERRY_KNOCKED_OFF = False    
+            
        # rotate_left(wheels)
         
         #print(compass.getValues())
         #continue
         
         if timer < 5:
-            
             continue
         '''
         accel_vector = accelerometer.getValues()
@@ -713,13 +923,11 @@ def main():
             rotate_left(wheels)
             lr -= 1
             continue
-        if tl_count:
-            
+        if tl_count:            
             reverse_left(wheels)
             tl_count -= 1
             continue
         elif tr_count:
-            
             reverse_right(wheels)
             tr_count -= 1
             continue
@@ -732,8 +940,8 @@ def main():
             print(receiver.getQueueLength())
             print(receiver.getData())
             receiver.nextPacket()
-        '''
         
+        '''
         image1 = camera1.getImageArray()
         imageB = camera5.getImageArray()
         imageR = camera6.getImageArray()
@@ -750,7 +958,7 @@ def main():
         width = camera1.getWidth()  
         height = camera1.getHeight()
 
-        LF_berries = robot_info[0] < 80 or robot_info[1] < 70 # maybe change based on health, energy metric
+        LF_berries = robot_info[0] < 80 or robot_info[1] < 100 # maybe change based on health, energy metric
         
         
         nxt_dir = None
@@ -762,6 +970,7 @@ def main():
             critical_zombies, wall = has_critical_zombies_or_wall(image1_T) 
             Rwall = approaching_wall(imageR_T)
             Lwall = approaching_wall(imageL_T)
+            close_stump = too_close_stump(image1_T)
             if Rwall:
                 sl = 4
                 continue
@@ -775,8 +984,8 @@ def main():
             with open('imB.txt', 'w') as f:
                 f.write(str(imageB))
             with open('imL.txt', 'w') as f:
-                f.write(str(imageL))       
-            if (LF_berries and i%200 == 0) or (not LF_berries and i%40 == 0) or critical_zombies or wall:
+                f.write(str(imageL))
+            if (LF_berries and i%200 == 0) or (not LF_berries and i%40 == 0) or critical_zombies or wall or close_stump:
                 print('critical_zombie: {}, wall: {}'.format(critical_zombies, wall))
                 world_pixels_F, world_pixels_B, world_pixels_R, world_pixels_L = [np.full((height,width), '0') for _ in range(4)]
                 compute_world_pixel_info([(world_pixels_F, image1), (world_pixels_R, imageR), (world_pixels_B, imageB), (world_pixels_L, imageL)], width, height)        
@@ -800,12 +1009,16 @@ def main():
                 
                 #turn 
             elif LF_berries:
-                drive_to_berry(fr, fl, br, bl, camera1, image1_T)
-                # drive to closest berry without zombie on/near it
+                val = drive_to_berry(fr, fl, br, bl, camera1, image1_T)
+                if val is not None:
+                    is_at_stump = val
+                
+            # drive to closest berry without zombie on/near it
             else:
                 base_forwards(wheels)
         else:
             base_forwards(wheels)
+                
         
         i+=1
         #------------------CHANGE CODE ABOVE HERE ONLY--------------------------
