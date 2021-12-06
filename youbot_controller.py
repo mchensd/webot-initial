@@ -1,6 +1,4 @@
 """youbot_controller controller."""
-#TODO: detect critical zombies bug
-#TODO: better scoring function?
 
 from controller import Robot, Motor, Camera, Accelerometer, GPS, Gyro, LightSensor, Receiver, RangeFinder, Lidar
 from controller import Supervisor
@@ -8,8 +6,6 @@ import numpy as np
 
 from youbot_zombie import *   
 #------------------CHANGE CODE BELOW HERE ONLY--------------------------
-#define functions here for making decisions and using sensor inputs
-
 
 class BerryMetadata():
     def __init__(self, x1, x2, y, color, stump):
@@ -27,8 +23,6 @@ PI = 3.14159265
 THIRTY_DEG_STEPS = 4
 LF_berries = False
 
-# time to rotate pi/6 = pi/6/0.835
-# timer steps = time/.128
 COLOR_DIST_THRESH = 300
 AT_STUMP = "at stump"
 NOT_AT_STUMP = "not at stump"
@@ -43,6 +37,8 @@ STR_TO_RGB = {
 
 BERRIES_CHARS = ['o', 'r', 'y', 'p']
 BERRIES_STRS = ['orange', 'red', 'yellow', 'pink']
+
+# Sampled pixel color values 
 BERRIES_PIXELS = {
     (212,140,95): ('orange', 0),
     (195,125,86): ('orange', 1),
@@ -218,6 +214,9 @@ STUMP_PIXELS = {
 
 
 def rgb_to_char(pixel):
+    """
+    takes an [r,g,b] pixel value and returns the char corresponding to the object it is most likely to belong to
+    """
     for color in BERRIES_PIXELS:
         if dist(pixel, color) <= COLOR_DIST_THRESH:
             return BERRIES_PIXELS[color][0][0]
@@ -237,7 +236,6 @@ def rgb_to_char(pixel):
     return '0'
                 
 def base_forwards(wheels, mult=1):
-    # print("Called")
     for wheel in wheels:
         wheel.setPosition(float('inf'))
         wheel.setVelocity(mult*SPEED)
@@ -312,51 +310,10 @@ def dist(a, b):
     return sum([(a[i]-b[i])**2 for i in range(len(a))])
 
 
-'''
-def get_zombie_locs(world_pixel_info, zombies_pixels):
-    # (row, [(average column, color)])
-    locs = []
-    for i in range(len(world_pixel_info) - 1, len(world_pixel_info) // 2, -1):
-        row_zombies = []
-        xrange = []
-        color = ''
-        prev = False
-        for j in range(len(world_pixel_info[i])):
-            if world_pixel_info[i][j] in zombies_pixels:
-                if prev:
-                    continue
-                print(world_pixel_info[i][j])
-                seen = False
-                if i < len(world_pixel_info) - 1:
-                    for k in range(j-3, j+4):
-                        if k < 0 or k >= len(world_pixel_info[i]):
-                            continue
-                        if world_pixel_info[i+1][k] in zombies_pixels:
-                            seen = True
-                            break
-                if seen:
-                    prev = True
-                    continue
-                    
-                if len(xrange) == 0:
-                    xrange.append(j)
-                    color = world_pixel_info[i][j]
-            else:
-                prev = False
-                if len(xrange) == 1:
-                    xrange.append(j)
-                    row_zombies.append((sum(xrange)/2, color))
-                    xrange = []
-                    color = ''
-        if len(xrange) == 1:
-            xrange.append(len(world_pixel_info[i]))
-            row_zombies.append((sum(xrange)/2, color))
-        if len(row_zombies):
-            locs.append((i, row_zombies))
-    print(locs)
-    return locs
-'''    
 def compute_world_pixel_info(dict_image_tups, width, height):
+    """
+    converts a 64x128x3 pixel image to a 64x128 char array. each char represents what object the pixel at that position belongs to.
+    """
     for pixel_info, image in dict_image_tups:
         for y in range(height):
             row = []
@@ -367,6 +324,10 @@ def compute_world_pixel_info(dict_image_tups, width, height):
                 pixel_info[y][x] = rgb_to_char([r,g,b])
                 
 def dfs(pixels, visited, row, col, color, d):
+    """
+    DFS to calculate the connected berry and zombie components. The variable 'd' stores the furthest row from the top that belongs to the zombie
+    or 
+    """
     st = []
     st.append((row, col))
     visited[row][col] = True
@@ -388,6 +349,8 @@ def dfs(pixels, visited, row, col, color, d):
                 continue
             
 def get_world_stats(pixels):
+    """
+    """
     zombies_info = []
     berries_info = []
     floor_pixel_count = 0
